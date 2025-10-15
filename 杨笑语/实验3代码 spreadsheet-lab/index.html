@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>电子表格实践 I - x-spreadsheet + d3 可视化</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/x-data-spreadsheet@1.1.5/dist/xspreadsheet.css" />
+    <style>
+      /* 页面布局 */
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', Helvetica, Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+        color: #1f2329;
+      }
+      .page {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        padding: 16px;
+      }
+      #xspreadsheet {
+        width: 400px;
+        height: 500px;
+        padding: 0;
+        margin: 0;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+      }
+      .controls {
+        margin: 8px 0 12px 0;
+        user-select: none;
+      }
+      #my_dataviz {
+        width: 1000px;
+        height: 900px;
+        padding: 0;
+        margin: 0;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+      }
+      .ticktext {
+        font-size: 20px;
+        stroke: black;
+        stroke-width: 0.05em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div>
+        <div class="controls">
+          <label>
+            <input type="checkbox" class="checkbox" value="barchart" />
+            barchart
+          </label>
+        </div>
+        <div id="xspreadsheet"></div>
+      </div>
+      <div id="my_dataviz"></div>
+    </div>
+
+    <script src="https://unpkg.com/x-data-spreadsheet@1.1.5/dist/xspreadsheet.js"></script>
+    <script src="https://unpkg.com/x-data-spreadsheet@1.1.9/dist/locale/zh-cn.js"></script>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+
+    <script>
+      // 本地化
+      x_spreadsheet.locale('zh-cn');
+
+      // 初始化电子表格
+      const xs = x_spreadsheet('#xspreadsheet', {
+        mode: 'edit',
+        showToolbar: true,
+        showGrid: true,
+        showContextmenu: true,
+        row: { len: 50, height: 25 },
+        col: { len: 20, width: 100, indexWidth: 60, minWidth: 60 },
+        style: {
+          bgcolor: '#ffffff', align: 'left', valign: 'middle', textwrap: false,
+          strike: false, underline: false, color: '#0a0a0a',
+          font: { name: 'Helvetica', size: 12, bold: false, italic: false }
+        }
+      });
+
+      // 初值：第一行做列标题（从第2列起），第一列做行标题（从第2行起），其余为数值
+      xs.cellText(0, 1, '计算机').cellText(0, 2, '法学').reRender();
+      xs.cellText(1, 0, '2017').cellText(1, 1, '23').cellText(1, 2, '15').reRender();
+      xs.cellText(2, 0, '2018').cellText(2, 1, '36').cellText(2, 2, '26').reRender();
+      xs.cellText(3, 0, '2019').cellText(3, 1, '23').cellText(3, 2, '33').reRender();
+      xs.cellText(4, 0, '2020').cellText(4, 1, '22').cellText(4, 2, '10').reRender();
+
+      function getColor(index) {
+        const palette = [
+          '#5ab1ef', '#ffb980', '#d87a80', '#2ec7c9', '#b6a2de',
+          '#8d98b3', '#e5cf0d', '#97b552', '#95706d', '#dc69aa',
+          '#07a2a4', '#9a7fd1', '#588dd5', '#f5994e', '#c05050',
+          '#59678c', '#c9ab00', '#7eb00a', '#6f5553', '#c14089'
+        ];
+        return palette[index % palette.length];
+      }
+
+      function collectTableData() {
+        // 收集 X 轴子组（第一行第2列起）与 Y 轴分组（第一列第2行起）
+        const xTitle = [];
+        const yTitle = [];
+        let colCount = 0;
+        let rowCount = 0;
+
+        for (let c = 1; c < 1000; c += 1) {
+          const cell = xs.cell(0, c);
+          if (!cell || cell.text === undefined || cell.text === '') { colCount = c; break; }
+          xTitle.push(String(cell.text));
+        }
+
+        for (let r = 1; r < 1000; r += 1) {
+          const cell = xs.cell(r, 0);
+          if (!cell || cell.text === undefined || cell.text === '') { rowCount = r; break; }
+          yTitle.push(String(cell.text));
+        }
+
+        if (xTitle.length === 0 || yTitle.length === 0) return null;
+
+        const dataMatrix = Array.from({ length: yTitle.length }, () => Array(xTitle.length).fill(0));
+        for (let r = 1; r < rowCount; r += 1) {
+          for (let c = 1; c < colCount; c += 1) {
+            const cell = xs.cell(r, c);
+            if (!cell || cell.text === undefined || cell.text === '') return null;
+            const value = Number(cell.text);
+            if (Number.isNaN(value)) return null;
+            dataMatrix[r - 1][c - 1] = value;
+          }
+        }
+
+        return { xTitle, yTitle, dataMatrix };
+      }
+
+      function update() {
+        const checked = d3.select('.checkbox').property('checked');
+        // 清理画布
+        d3.select('#my_dataviz').selectAll('*').remove();
+
+        if (!checked) return;
+
+        const table = collectTableData();
+        if (!table) return; // 数据不完整或格式不对
+
+        // 将数据存为全局变量（亦可持久化到 localStorage）
+        window.xTitle = table.xTitle.slice();
+        window.yTitle = table.yTitle.slice();
+        window.tableData = table.dataMatrix.map(row => row.slice());
+
+        // 计算最大值
+        const maxValue = d3.max(window.tableData.flat());
+
+        // 分组柱状图（grouped bar chart）
+        const margin = { top: 40, right: 30, bottom: 40, left: 50 };
+        const width = 600 - margin.left - margin.right;
+        const height = 500 - margin.top - margin.bottom;
+
+        const svg = d3
+          .select('#my_dataviz')
+          .append('svg')
+          .attr('width', width + margin.left + margin.right + 100)
+          .attr('height', height + margin.top + margin.bottom)
+          .append('g')
+          .attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const groups = window.yTitle;
+        const subgroups = window.xTitle;
+
+        const x = d3.scaleBand().domain(groups).range([0, width]).padding(0.2);
+        svg.append('g')
+          .attr('transform', `translate(0, ${height})`)
+          .call(d3.axisBottom(x).tickSizeOuter(0));
+
+        const y = d3.scaleLinear().domain([0, maxValue]).range([height, 0]).nice();
+        svg.append('g').call(d3.axisLeft(y));
+
+        const xSubgroup = d3.scaleBand().domain(subgroups).range([0, x.bandwidth()]).padding(0.05);
+
+        // 将数据结构转换为 [{ group: '2017', A: 23, B: 15 }, ...]
+        const series = groups.map((g, gi) => {
+          const row = { group: g };
+          subgroups.forEach((k, ki) => { row[k] = window.tableData[gi][ki]; });
+          return row;
+        });
+
+        // 柱
+        svg.append('g')
+          .selectAll('g')
+          .data(series)
+          .join('g')
+          .attr('class', 'bar')
+          .attr('transform', d => `translate(${x(d.group)}, 0)`) 
+          .selectAll('rect')
+          .data(d => subgroups.map(key => ({ key, value: d[key] })))
+          .join('rect')
+          .attr('x', d => xSubgroup(d.key))
+          .attr('y', d => y(d.value))
+          .attr('width', xSubgroup.bandwidth())
+          .attr('height', d => height - y(d.value))
+          .attr('fill', (d, i) => getColor(i));
+
+        // 数值标签
+        svg.append('g')
+          .selectAll('g')
+          .data(series)
+          .join('g')
+          .attr('transform', d => `translate(${x(d.group)}, 0)`) 
+          .selectAll('text')
+          .data(d => subgroups.map(key => ({ key, value: d[key] })))
+          .join('text')
+          .attr('x', d => xSubgroup(d.key) + xSubgroup.bandwidth() * 0.5)
+          .attr('y', d => y(d.value) - 8)
+          .attr('text-anchor', 'middle')
+          .style('font-size', '12px')
+          .text(d => d.value);
+
+        // 图例
+        const legendData = subgroups.map((name, i) => ({ name, color: getColor(i) }));
+        const legend = svg
+          .selectAll('.legend')
+          .data(legendData)
+          .enter()
+          .append('g')
+          .attr('class', 'legend')
+          .attr('transform', (d, i) => `translate(30, ${i * 20 + 120})`);
+
+        legend.append('rect')
+          .attr('x', width - 25)
+          .attr('y', 8)
+          .attr('width', 40)
+          .attr('height', 5)
+          .style('fill', d => d.color);
+
+        legend.append('text')
+          .attr('x', width + 20)
+          .attr('y', 15)
+          .style('text-anchor', 'end')
+          .style('font-size', '12px')
+          .text(d => d.name);
+      }
+
+      // 事件绑定
+      xs.on('cell-edited', update);
+      d3.selectAll('.checkbox').on('change', update);
+    </script>
+  </body>
+  </html>
+
+
